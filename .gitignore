@@ -1,0 +1,15 @@
+build/
+cmake-build-*/
+
+# Local model artifacts are large and carry their own licenses.
+models/
+*.gguf
+*.safetensors
+
+# Local synthesis inputs/outputs. Keep public audio samples explicit if needed.
+*.wav
+*.flac
+*.mp3
+*.ogg
+
+.DS_Store

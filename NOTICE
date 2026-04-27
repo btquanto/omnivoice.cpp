@@ -1,0 +1,11 @@
+OmniVoice GGML C++
+Copyright 2026 The OmniVoice GGML C++ contributors
+
+This product includes software developed by the ggml project
+(https://github.com/ggml-org/ggml).
+
+This product implements an independent GGML C++ inference runtime for
+OmniVoice model artifacts. OmniVoice is developed by the k2-fsa project
+(https://github.com/k2-fsa/OmniVoice).
+
+See THIRD_PARTY_NOTICES.md for dependency and model artifact notices.
