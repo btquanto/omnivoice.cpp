@@ -208,6 +208,18 @@ Higgs decode are comparatively small.
 
 Pass a local OmniVoice-compatible GGUF file via `--model`.
 
+Community GGUF artifacts are available at:
+
+```text
+https://huggingface.co/bluryar/omnivoice-gguf
+```
+
+For example, download the Q8_0 model with:
+
+```bash
+hf download bluryar/omnivoice-gguf omnivoice-q8_0.gguf --local-dir models
+```
+
 Known local smoke surfaces include:
 
 - F32 GGUF
