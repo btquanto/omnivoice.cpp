@@ -4,8 +4,10 @@
 #include "httplib.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <filesystem>
@@ -595,6 +597,7 @@ int main(int argc, char ** argv) {
                   << " speed=" << speed << "\n";
 
         omnivoice::Audio audio;
+        const auto gen_start = std::chrono::steady_clock::now();
         try {
             std::lock_guard<std::mutex> lock(gen_mutex);
             audio = runtime.generate(params);
@@ -604,6 +607,7 @@ int main(int argc, char ** argv) {
             std::cerr << "[error] " << e.what() << "\n";
             return;
         }
+        const double gen_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - gen_start).count();
 
         // --- Encode response ---
         std::string audio_bytes;
@@ -613,11 +617,15 @@ int main(int argc, char ** argv) {
             audio_bytes = encode_wav(audio.samples, audio.sample_rate);
         }
 
-        const double output_seconds = audio.sample_rate > 0
+        const double audio_seconds = audio.sample_rate > 0
             ? double(audio.samples.size()) / double(audio.sample_rate)
             : 0.0;
-        std::cerr << "[response] " << output_seconds << "s audio, "
-                  << audio_bytes.size() << " bytes (" << response_format << ")\n";
+        const double rtf = audio_seconds > 0.0 ? gen_seconds / audio_seconds : 0.0;
+        std::cerr << std::fixed << std::setprecision(3)
+                  << "[response] gen=" << gen_seconds << "s"
+                  << " audio=" << audio_seconds << "s"
+                  << " rtf=" << rtf
+                  << " size=" << audio_bytes.size() << " (" << response_format << ")\n";
 
         res.status = 200;
         res.set_content(audio_bytes, format_content_type(response_format));
