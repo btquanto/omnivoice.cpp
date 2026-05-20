@@ -1364,7 +1364,7 @@ VoiceClonePrompt make_voice_clone_prompt(Model & model, const std::string & path
     double ref_audio_seconds = 0.0;
     {
         ScopedStage stage(model, "reference_encode", "reference_read_preprocess");
-        wav = read_wav_mono(path, model.higgs.sample_rate, &source_rate);
+        wav = read_audio_mono_f32(path, model.higgs.sample_rate, &source_rate);
         for (float v : wav) rms += v * v;
         rms = wav.empty() ? 0.0f : std::sqrt(rms / float(wav.size()));
         if (rms > 0.0f && rms < 0.1f) {

@@ -31,6 +31,33 @@ committed directly into the submodule; apply
 `patches/ggml-v0.9.11-omnivoice-cuda-fixes.patch` after initializing the
 submodule.
 
+## cpp-httplib
+
+- Project: https://github.com/yhirose/cpp-httplib
+- Vendored path: `vendor/httplib`
+- License: MIT License
+
+The vendored header includes its upstream copyright and license notice.
+
+## miniaudio
+
+- Project: https://github.com/mackron/miniaudio
+- Vendored path: `vendor/miniaudio`
+- Baseline: tag `0.11.25`
+- License: public domain or MIT No Attribution, at the user's choice
+
+The vendored header includes the upstream license statements; the source file
+only enables the single-header implementation.
+
+## JSON for Modern C++
+
+- Project: https://github.com/nlohmann/json
+- Vendored path: `vendor/nlohmann`
+- Baseline: version `3.12.0`
+- License: MIT License
+
+The vendored header includes its upstream SPDX copyright and license notice.
+
 ## Higgs Audio Tokenizer And Other Model Components
 
 OmniVoice model artifacts may include or depend on components derived from the

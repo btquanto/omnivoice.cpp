@@ -14,7 +14,8 @@ This is an alpha standalone runtime.
 Verified locally:
 
 - CUDA text-to-speech with OmniVoice GGUF models.
-- CUDA reference-audio voice cloning with WAV input and explicit `--ref-text`.
+- CUDA reference-audio voice cloning with WAV, MP3, and FLAC input and
+  explicit `--ref-text`.
 - CPU fallback smoke tests.
 - Long Chinese text synthesis with UTF-8-aware chunking and chunked Higgs
   decode.
@@ -111,7 +112,8 @@ This is intended to make latency attribution visible during local inference.
 
 ## Reference-Audio Voice Cloning
 
-Reference audio is WAV-only in this version. `--ref-text` is required.
+Reference audio supports WAV, MP3, and FLAC input via miniaudio. `--ref-text`
+is required.
 
 ```bash
 ./build/omnivoice-cli \
@@ -149,7 +151,7 @@ Reference audio is WAV-only in this version. `--ref-text` is required.
 --language              language name or code, for example Chinese, zh, English, en
 --instruct              voice design prompt, for example "female, low pitch"
 --auto-voice            true|false
---ref-audio             WAV reference audio
+--ref-audio             WAV, MP3, or FLAC reference audio
 --ref-text              transcript for --ref-audio
 --num-step              generation iteration count, default 32
 --guidance-scale        classifier-free guidance scale, default 2.0
@@ -231,9 +233,11 @@ OmniVoice tensor names and metadata.
 
 ## Limitations
 
-- WAV input/output only.
+- Reference audio input is limited to WAV, MP3, and FLAC.
+- WAV output only for the CLI.
 - `--ref-text` is required with `--ref-audio`; no ASR fallback is included.
-- No HTTP server or serving scheduler.
+- The HTTP server is single-runtime and serialized; no batching scheduler,
+  authentication, request queue, or rate limiting is included.
 - No debug telemetry, performance counters, or experimental backend gates.
 - The tokenizer and stochastic seed paths are close to the Python staging
   runtime but are not yet certified as exact parity for every edge case.

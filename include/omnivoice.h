@@ -85,6 +85,7 @@ private:
 };
 
 std::vector<float> read_wav_mono(const std::string & path, int target_sample_rate, int * source_sample_rate = nullptr);
+std::vector<float> read_audio_mono_f32(const std::string & path, int target_sample_rate, int * source_sample_rate = nullptr);
 void write_wav_mono_f32(const std::string & path, const std::vector<float> & samples, int sample_rate);
 
 } // namespace omnivoice

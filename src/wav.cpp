@@ -1,26 +1,17 @@
 #include "omnivoice_internal.h"
 
+#include "miniaudio.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <fstream>
+#include <limits>
+#include <memory>
 #include <stdexcept>
 
 namespace omnivoice {
 namespace {
-
-uint32_t read_u32(std::istream & is) {
-    unsigned char b[4];
-    is.read(reinterpret_cast<char *>(b), 4);
-    return uint32_t(b[0]) | (uint32_t(b[1]) << 8) | (uint32_t(b[2]) << 16) | (uint32_t(b[3]) << 24);
-}
-
-uint16_t read_u16(std::istream & is) {
-    unsigned char b[2];
-    is.read(reinterpret_cast<char *>(b), 2);
-    return uint16_t(b[0]) | (uint16_t(b[1]) << 8);
-}
 
 void write_u32(std::ostream & os, uint32_t v) {
     unsigned char b[4] = {static_cast<unsigned char>(v), static_cast<unsigned char>(v >> 8), static_cast<unsigned char>(v >> 16), static_cast<unsigned char>(v >> 24)};
@@ -32,83 +23,56 @@ void write_u16(std::ostream & os, uint16_t v) {
     os.write(reinterpret_cast<const char *>(b), 2);
 }
 
+std::string ma_error(ma_result result) {
+    const char * desc = ma_result_description(result);
+    return desc ? desc : "unknown miniaudio error";
+}
+
+int read_source_sample_rate(const std::string & path) {
+    ma_decoder decoder;
+    const ma_result result = ma_decoder_init_file(path.c_str(), nullptr, &decoder);
+    if (result != MA_SUCCESS) {
+        throw std::runtime_error("failed to open audio: " + path + " (" + ma_error(result) + ")");
+    }
+
+    const int sample_rate = static_cast<int>(decoder.outputSampleRate);
+    ma_decoder_uninit(&decoder);
+    return sample_rate;
+}
+
+struct MaFramesDeleter {
+    void operator()(float * p) const {
+        ma_free(p, nullptr);
+    }
+};
+
 } // namespace
 
+std::vector<float> read_audio_mono_f32(const std::string & path, int target_sample_rate, int * source_sample_rate) {
+    if (target_sample_rate <= 0) throw std::runtime_error("target sample rate must be positive");
+
+    const int source_rate = read_source_sample_rate(path);
+    if (source_sample_rate) *source_sample_rate = source_rate;
+
+    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 1, static_cast<ma_uint32>(target_sample_rate));
+    ma_uint64 frame_count = 0;
+    void * pcm = nullptr;
+    const ma_result result = ma_decode_file(path.c_str(), &config, &frame_count, &pcm);
+    if (result != MA_SUCCESS) {
+        throw std::runtime_error("failed to decode audio: " + path + " (" + ma_error(result) + ")");
+    }
+
+    if (frame_count > static_cast<ma_uint64>(std::numeric_limits<size_t>::max())) {
+        ma_free(pcm, nullptr);
+        throw std::runtime_error("decoded audio is too large: " + path);
+    }
+
+    std::unique_ptr<float, MaFramesDeleter> frames(static_cast<float *>(pcm));
+    return std::vector<float>(frames.get(), frames.get() + static_cast<size_t>(frame_count));
+}
+
 std::vector<float> read_wav_mono(const std::string & path, int target_sample_rate, int * source_sample_rate) {
-    std::ifstream is(path, std::ios::binary);
-    if (!is) throw std::runtime_error("failed to open WAV: " + path);
-    char riff[4];
-    is.read(riff, 4);
-    if (std::strncmp(riff, "RIFF", 4) != 0) throw std::runtime_error("WAV is not RIFF: " + path);
-    (void) read_u32(is);
-    char wave[4];
-    is.read(wave, 4);
-    if (std::strncmp(wave, "WAVE", 4) != 0) throw std::runtime_error("WAV is not WAVE: " + path);
-
-    uint16_t audio_format = 0;
-    uint16_t channels = 0;
-    uint32_t sample_rate = 0;
-    uint16_t bits_per_sample = 0;
-    std::vector<unsigned char> data;
-
-    while (is) {
-        char id[4];
-        is.read(id, 4);
-        if (!is) break;
-        uint32_t size = read_u32(is);
-        std::string chunk(id, 4);
-        if (chunk == "fmt ") {
-            audio_format = read_u16(is);
-            channels = read_u16(is);
-            sample_rate = read_u32(is);
-            (void) read_u32(is);
-            (void) read_u16(is);
-            bits_per_sample = read_u16(is);
-            if (size > 16) is.seekg(size - 16, std::ios::cur);
-        } else if (chunk == "data") {
-            data.resize(size);
-            is.read(reinterpret_cast<char *>(data.data()), size);
-        } else {
-            is.seekg(size, std::ios::cur);
-        }
-        if (size & 1) is.seekg(1, std::ios::cur);
-    }
-
-    if (channels == 0 || sample_rate == 0 || data.empty()) throw std::runtime_error("WAV missing fmt/data: " + path);
-    if (source_sample_rate) *source_sample_rate = int(sample_rate);
-    const size_t frames = data.size() / (channels * (bits_per_sample / 8));
-    std::vector<float> mono(frames, 0.0f);
-    const unsigned char * p = data.data();
-    for (size_t i = 0; i < frames; ++i) {
-        double sum = 0.0;
-        for (uint16_t ch = 0; ch < channels; ++ch) {
-            float v = 0.0f;
-            if (audio_format == 3 && bits_per_sample == 32) {
-                float f;
-                std::memcpy(&f, p, sizeof(float));
-                v = f;
-                p += 4;
-            } else if (audio_format == 1 && bits_per_sample == 16) {
-                int16_t s = int16_t(uint16_t(p[0]) | (uint16_t(p[1]) << 8));
-                v = float(s) / 32768.0f;
-                p += 2;
-            } else if (audio_format == 1 && bits_per_sample == 24) {
-                int32_t s = int32_t(p[0]) | (int32_t(p[1]) << 8) | (int32_t(p[2]) << 16);
-                if (s & 0x800000) s |= ~0xffffff;
-                v = float(s) / 8388608.0f;
-                p += 3;
-            } else if (audio_format == 1 && bits_per_sample == 32) {
-                int32_t s = int32_t(uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24));
-                v = float(double(s) / 2147483648.0);
-                p += 4;
-            } else {
-                throw std::runtime_error("unsupported WAV format in " + path);
-            }
-            sum += v;
-        }
-        mono[i] = float(sum / double(channels));
-    }
-    return resample_linear(mono, int(sample_rate), target_sample_rate);
+    return read_audio_mono_f32(path, target_sample_rate, source_sample_rate);
 }
 
 void write_wav_mono_f32(const std::string & path, const std::vector<float> & samples, int sample_rate) {

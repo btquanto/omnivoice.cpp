@@ -61,7 +61,7 @@ These parameters give direct access to OmniVoice's generation controls:
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `language` | string | auto | Language code (e.g. `"ru"`, `"en"`, `"zh"`, `"ja"`). See [Supported Languages](languages.md). |
-| `ref_audio` | string | | Path to reference audio file for voice cloning |
+| `ref_audio` | string | | Path to reference WAV, MP3, or FLAC file for voice cloning |
 | `ref_text` | string | | Transcription of the reference audio |
 | `num_step` | int | 32 | Iterative unmasking steps. Higher = better quality but slower. Use 16 for faster inference. |
 | `guidance_scale` | float | 2.0 | Classifier-free guidance scale |
@@ -230,7 +230,7 @@ Voice presets are pairs of files in the `--voices-dir` directory:
 
 ```
 voices/
-  alice.wav       # Reference audio (WAV, MP3, OGG, or FLAC)
+  alice.wav       # Reference audio (WAV, MP3, or FLAC)
   alice.txt       # Transcription (single line of text)
   bob.wav
   bob.txt
