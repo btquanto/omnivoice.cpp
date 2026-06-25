@@ -79,6 +79,31 @@ target_include_directories(omnivoice_ggml_cpp
 
 target_link_libraries(omnivoice_ggml_cpp PUBLIC ggml PRIVATE omnivoice_miniaudio omnivoice_shine)
 
+# ── Bridge static library for Go CGo linking ──
+add_library(omnivoice_bridge STATIC
+    bridge/bridge.cpp
+)
+
+target_include_directories(omnivoice_bridge
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/bridge"
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
+target_link_libraries(omnivoice_bridge PUBLIC omnivoice_ggml_cpp)
+
+set_property(TARGET omnivoice_bridge PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET omnivoice_ggml_cpp PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET omnivoice_miniaudio PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET omnivoice_shine PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+target_compile_options(ggml PRIVATE -march=native -mtune=native)
+target_compile_options(omnivoice_ggml_cpp PRIVATE -march=native -mtune=native)
+target_compile_options(omnivoice_bridge PRIVATE -march=native -mtune=native)
+
+if (GGML_VULKAN)
+    target_compile_definitions(omnivoice_ggml_cpp PRIVATE GGML_USE_VULKAN)
+endif()
+
 add_library(omnivoice_nlohmann_json INTERFACE)
 add_library(nlohmann_json::nlohmann_json ALIAS omnivoice_nlohmann_json)
 target_include_directories(omnivoice_nlohmann_json
