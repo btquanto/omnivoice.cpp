@@ -148,7 +148,8 @@ Use the `--backend llama` flag at runtime:
 **How it works:** The monolithic OmniVoice GGUF contains Qwen3 LLM weights plus
 audio heads and Higgs decoder. When `--backend llama` is selected, the Qwen3
 forward pass (28 blocks of RMSNorm + Q/K/V attention + SwiGLU MLP) is served by
-llama.cpp's embedding mode with `causal_attn=false`. The audio heads projection
+llama.cpp's embedding mode with `causal_attn=false` and partial tensor loading
+(the extra Higgs/audio tensors are ignored). The audio heads projection
 (`a.output`), CFG guidance, argmax sampling, and Higgs decoder remain in the
 existing GGML graph. See [PERFORMANCE.md](https://github.com/scottyeager/OmniVoice/blob/bff0521664351babf1d2743fa54b4128ed06de18/PERFORMANCE.md) for the benchmark evidence.
 
@@ -258,8 +259,8 @@ is required.
 --duration              fixed output duration in seconds
 --position-temperature  position sampling temperature, default 5.0
 --class-temperature     class sampling temperature, default 0.0
---device                cpu or cuda[:N]
---backend               cpu or cuda
+--device                cpu, cuda[:N], or vulkan[:N]
+--backend               cpu, cuda, vulkan, or llama
 --seed                  random seed
 --threads               CPU thread count
 ```
