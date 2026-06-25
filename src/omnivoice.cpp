@@ -9,6 +9,42 @@
 #include "ggml-vulkan.h"
 #endif
 
+#ifdef OMNIVOICE_LLAMA
+#include <dlfcn.h>
+
+// llama backend function pointers (loaded from omnivoice_llama_backend.so)
+static void * llama_handle = nullptr;
+static void * (*llama_backend_load_fn)(const char *, int) = nullptr;
+static void   (*llama_backend_free_fn)(void *) = nullptr;
+static int    (*llama_backend_n_embd_fn)(void *) = nullptr;
+static int    (*llama_backend_forward_fn)(void *, const float *, int, float *) = nullptr;
+
+static void * load_llama_lib() {
+    if (llama_handle) return llama_handle;
+    const char * lib_paths[] = {
+        "libomnivoice_llama_backend.so",
+        "./libomnivoice_llama_backend.so",
+        "../build/libomnivoice_llama_backend.so",
+        nullptr,
+    };
+    for (const char ** p = lib_paths; *p; ++p) {
+        llama_handle = dlopen(*p, RTLD_NOW | RTLD_LOCAL);
+        if (llama_handle) break;
+    }
+    if (!llama_handle) return nullptr;
+    llama_backend_load_fn    = (void *(*)(const char *, int))dlsym(llama_handle, "llama_backend_load");
+    llama_backend_free_fn    = (void (*)(void *))dlsym(llama_handle, "llama_backend_free");
+    llama_backend_n_embd_fn  = (int (*)(void *))dlsym(llama_handle, "llama_backend_n_embd");
+    llama_backend_forward_fn = (int (*)(void *, const float *, int, float *))dlsym(llama_handle, "llama_backend_forward");
+    if (!llama_backend_load_fn || !llama_backend_free_fn || !llama_backend_n_embd_fn || !llama_backend_forward_fn) {
+        dlclose(llama_handle);
+        llama_handle = nullptr;
+        return nullptr;
+    }
+    return llama_handle;
+}
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -934,6 +970,109 @@ void upload_branch(const Model & model, SplitCandidateGraph & graph, const Infer
     for (int i = 0; i < model.spec.num_audio_codebook; ++i) tensor_set(audio[static_cast<size_t>(i)], full_shifted_audio_ids(model.spec, inputs, i));
 }
 
+#ifdef OMNIVOICE_LLAMA
+std::vector<float> compute_inputs_embeds_cpu(const Model & model, const InferenceInputs & inputs) {
+    const int total = inputs.total_length();
+    const int embd = model.spec.qwen3.embedding_length;
+
+    std::vector<float> text_emb(static_cast<size_t>(total) * embd);
+    {
+        const std::vector<int32_t> ids = full_text_ids(inputs);
+        ggml_tensor * tok_t = model.t("token_embd.weight");
+        const int row_size = ggml_row_size(tok_t->type, embd);
+        for (int i = 0; i < total; ++i) {
+            ggml_backend_tensor_get(tok_t, &text_emb[static_cast<size_t>(i) * embd],
+                static_cast<int64_t>(ids[i]) * row_size, static_cast<size_t>(embd) * sizeof(float));
+        }
+    }
+
+    std::vector<float> audio_emb(static_cast<size_t>(total) * embd, 0.0f);
+    {
+        ggml_tensor * aud_t = model.t("a.token_embd");
+        const int row_size = ggml_row_size(aud_t->type, embd);
+        for (int c = 0; c < model.spec.num_audio_codebook; ++c) {
+            std::vector<int32_t> ids = full_shifted_audio_ids(model.spec, inputs, c);
+            for (int i = 0; i < total; ++i) {
+                float row[4096];
+                ggml_backend_tensor_get(aud_t, row,
+                    static_cast<int64_t>(ids[i]) * row_size, static_cast<size_t>(embd) * sizeof(float));
+                for (int j = 0; j < embd; ++j)
+                    audio_emb[static_cast<size_t>(i) * embd + j] += row[j];
+            }
+        }
+    }
+
+    std::vector<float> out(static_cast<size_t>(total) * embd);
+    for (int i = 0; i < total; ++i) {
+        const float m = inputs.audio_mask[i];
+        for (int j = 0; j < embd; ++j) {
+            out[static_cast<size_t>(i) * embd + j] =
+                text_emb[static_cast<size_t>(i) * embd + j] +
+                m * (audio_emb[static_cast<size_t>(i) * embd + j] - text_emb[static_cast<size_t>(i) * embd + j]);
+        }
+    }
+    return out;
+}
+
+struct FinalGraph {
+    std::unique_ptr<GraphHandle> gh;
+    ggml_tensor * cond_hidden = nullptr;
+    ggml_tensor * uncond_hidden = nullptr;
+    ggml_tensor * pred = nullptr;
+    ggml_tensor * scores = nullptr;
+};
+
+std::unique_ptr<FinalGraph> build_final_graph(const Model & model, int target_length, const GenerationConfig & config) {
+    auto out = std::make_unique<FinalGraph>();
+    out->gh = std::make_unique<GraphHandle>(model.backend.buft, 4096, 16ull * 1024ull * 1024ull);
+    ggml_context * ctx = out->gh->ctx;
+    const auto & spec = model.spec;
+    const int embd = spec.qwen3.embedding_length;
+    const int n_positions = spec.num_audio_codebook * target_length;
+    const int n_vocab = spec.audio_vocab_size;
+
+    out->cond_hidden = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, embd, target_length);
+    out->uncond_hidden = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, embd, target_length);
+    ggml_set_input(out->cond_hidden);
+    ggml_set_input(out->uncond_hidden);
+
+    auto branch = [&](ggml_tensor * hidden) {
+        ggml_tensor * cur = rms_norm_2d(ctx, hidden, model.t("output_norm.weight"), spec.qwen3.rms_norm_eps);
+        ggml_tensor * logits = ggml_mul_mat(ctx, model.t("a.output"), cur);
+        return ggml_reshape_3d(ctx, logits, n_vocab, spec.num_audio_codebook, target_length);
+    };
+
+    ggml_tensor * cond_out = branch(out->cond_hidden);
+    ggml_tensor * uncond_out = branch(out->uncond_hidden);
+
+    ggml_tensor * cond_flat = ggml_reshape_2d(ctx, cond_out, n_vocab, n_positions);
+    ggml_tensor * uncond_flat = ggml_reshape_2d(ctx, uncond_out, n_vocab, n_positions);
+    ggml_tensor * cond_log = candidate_log_softmax(ctx, cond_flat, n_vocab);
+    ggml_tensor * guided = cond_log;
+    if (config.guidance_scale != 0.0f) {
+        ggml_tensor * uncond_log = candidate_log_softmax(ctx, uncond_flat, n_vocab);
+        guided = ggml_add(ctx, cond_log, ggml_scale(ctx, ggml_sub(ctx, cond_log, uncond_log), config.guidance_scale));
+        guided = candidate_log_softmax(ctx, guided, n_vocab);
+    }
+
+    std::vector<float> mask_data(static_cast<size_t>(n_vocab) * n_positions, 0.0f);
+    for (int p = 0; p < n_positions; ++p) mask_data[static_cast<size_t>(p) * n_vocab + spec.audio_mask_id] = -INFINITY;
+    ggml_tensor * softmax_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_vocab, n_positions);
+    ggml_set_input(softmax_mask);
+    ggml_tensor * masked = ggml_add(ctx, guided, softmax_mask);
+    out->pred = ggml_argmax(ctx, masked);
+    out->scores = ggml_pool_2d(ctx, masked, GGML_OP_POOL_MAX, n_vocab, 1, n_vocab, 1, 0.0f, 0.0f);
+    out->scores = ggml_reshape_1d(ctx, out->scores, n_positions);
+    ggml_set_output(out->pred);
+    ggml_set_output(out->scores);
+    ggml_build_forward_expand(out->gh->graph, out->pred);
+    ggml_build_forward_expand(out->gh->graph, out->scores);
+    out->gh->reserve_alloc();
+    ggml_backend_tensor_set(softmax_mask, mask_data.data(), 0, mask_data.size() * sizeof(float));
+    return out;
+}
+#endif
+
 struct DecodeGraph {
     std::unique_ptr<GraphHandle> gh;
     std::vector<ggml_tensor *> code_inputs;
@@ -1073,6 +1212,109 @@ int estimate_target_tokens(const Model & model, const std::string & text, float 
     if (speed > 0.0f && speed != 1.0f) est = est / speed;
     return std::max(1, int(est));
 }
+
+#ifdef OMNIVOICE_LLAMA
+Tensor2i generate_codes_llama(void * llama_be, Model & model, const InferenceInputs & inputs, const GenerationConfig & config, int chunk_index, int chunk_count) {
+    ScopedStage stage(model, "llm", "llm_decode", chunk_index, chunk_count, double(inputs.target_length) / double(model.higgs.frame_rate()));
+    Tensor2i tokens = target_tokens(inputs);
+    std::mt19937_64 rng(config.seed.value_or(0));
+    const auto schedule = build_schedule(model.spec, inputs.target_length, config);
+    const int total_positions = model.spec.num_audio_codebook * inputs.target_length;
+    int updated_positions = 0;
+    const int n_embd = llama_backend_n_embd_fn(llama_be);
+
+    std::unique_ptr<FinalGraph> final_graph;
+
+    for (size_t step = 0; step < schedule.size(); ++step) {
+        const int update_count = schedule[step];
+        if (update_count <= 0) {
+            emit_trace(model, TraceEventKind::LlmProgress, "llm", "llm_decode", 0.0,
+                double(inputs.target_length) / double(model.higgs.frame_rate()),
+                chunk_index, chunk_count, int(step + 1), int(schedule.size()),
+                updated_positions, total_positions);
+            continue;
+        }
+
+        InferenceInputs cond = with_target_tokens(inputs, tokens);
+        InferenceInputs uncond = prepare_unconditional(model, tokens);
+
+        std::vector<float> cond_emb = compute_inputs_embeds_cpu(model, cond);
+        std::vector<float> uncond_emb = compute_inputs_embeds_cpu(model, uncond);
+
+        std::vector<float> cond_hidden(static_cast<size_t>(cond.target_length) * n_embd);
+        std::vector<float> uncond_hidden(static_cast<size_t>(uncond.target_length) * n_embd);
+
+        if (llama_backend_forward_fn(llama_be, cond_emb.data(), cond.total_length(),
+                cond_hidden.data()) != 0) {
+            throw std::runtime_error("llama forward (cond) failed");
+        }
+        if (llama_backend_forward_fn(llama_be, uncond_emb.data(), uncond.total_length(),
+                uncond_hidden.data()) != 0) {
+            throw std::runtime_error("llama forward (uncond) failed");
+        }
+
+        if (!final_graph) {
+            final_graph = build_final_graph(model, cond.target_length, config);
+        }
+
+        ggml_backend_tensor_set(final_graph->cond_hidden, cond_hidden.data(), 0,
+            static_cast<size_t>(cond.target_length) * n_embd * sizeof(float));
+        ggml_backend_tensor_set(final_graph->uncond_hidden, uncond_hidden.data(), 0,
+            static_cast<size_t>(uncond.target_length) * n_embd * sizeof(float));
+
+        const ggml_status st = ggml_backend_graph_compute(model.backend.backend, final_graph->gh->graph);
+        if (st != GGML_STATUS_SUCCESS) throw std::runtime_error("final graph compute failed");
+
+        const int positions = model.spec.num_audio_codebook * cond.target_length;
+        std::vector<int32_t> pred_flat(static_cast<size_t>(positions));
+        std::vector<float> score_flat(static_cast<size_t>(positions));
+        ggml_backend_tensor_get(final_graph->pred, pred_flat.data(), 0, pred_flat.size() * sizeof(int32_t));
+        ggml_backend_tensor_get(final_graph->scores, score_flat.data(), 0, score_flat.size() * sizeof(float));
+
+        std::vector<int32_t> pred(static_cast<size_t>(positions));
+        std::vector<float> scores(static_cast<size_t>(positions));
+        for (int t = 0; t < cond.target_length; ++t) {
+            for (int c = 0; c < model.spec.num_audio_codebook; ++c) {
+                const int src = t * model.spec.num_audio_codebook + c;
+                const int dst = c * cond.target_length + t;
+                pred[dst] = pred_flat[src];
+                scores[dst] = score_flat[src] - float(c) * config.layer_penalty_factor;
+            }
+        }
+        if (config.position_temperature > 0.0f) {
+            std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+            for (float & s : scores) {
+                const float u = std::max(1.0e-10f, dist(rng));
+                const float g = -std::log(-std::log(u + 1.0e-10f) + 1.0e-10f);
+                s = s / config.position_temperature + g;
+            }
+        }
+        for (int c = 0; c < tokens.rows; ++c) {
+            for (int t = 0; t < tokens.cols; ++t) {
+                if (tokens(c, t) != model.spec.audio_mask_id) scores[static_cast<size_t>(c * tokens.cols + t)] = -INFINITY;
+            }
+        }
+        std::vector<int> idx(static_cast<size_t>(positions));
+        std::iota(idx.begin(), idx.end(), 0);
+        idx.erase(std::remove_if(idx.begin(), idx.end(), [&](int i) { return !std::isfinite(scores[static_cast<size_t>(i)]); }), idx.end());
+        if (update_count < int(idx.size())) {
+            std::nth_element(idx.begin(), idx.end() - update_count, idx.end(), [&](int a, int b) { return scores[static_cast<size_t>(a)] < scores[static_cast<size_t>(b)]; });
+            idx.erase(idx.begin(), idx.end() - update_count);
+        }
+        for (int flat : idx) {
+            const int c = flat / tokens.cols;
+            const int t = flat % tokens.cols;
+            tokens(c, t) = pred[static_cast<size_t>(flat)];
+        }
+        updated_positions = std::min(total_positions, updated_positions + update_count);
+        emit_trace(model, TraceEventKind::LlmProgress, "llm", "llm_decode", 0.0,
+            double(inputs.target_length) / double(model.higgs.frame_rate()),
+            chunk_index, chunk_count, int(step + 1), int(schedule.size()),
+            updated_positions, total_positions);
+    }
+    return tokens;
+}
+#endif
 
 Tensor2i generate_codes(Model & model, const InferenceInputs & inputs, const GenerationConfig & config, int chunk_index, int chunk_count) {
     ScopedStage stage(model, "llm", "llm_decode", chunk_index, chunk_count, double(inputs.target_length) / double(model.higgs.frame_rate()));
@@ -1409,7 +1651,23 @@ VoiceClonePrompt make_voice_clone_prompt(Model & model, const std::string & path
 
 struct OmniVoiceRuntime::Impl {
     Model model;
-    explicit Impl(const std::string & model_path, const RuntimeOptions & options) : model(model_path, options) {}
+#ifdef OMNIVOICE_LLAMA
+    void * llama_be = nullptr;
+#endif
+    explicit Impl(const std::string & model_path, const RuntimeOptions & options) : model(model_path, options) {
+#ifdef OMNIVOICE_LLAMA
+        if (options.backend == "llama" || options.backend == "llama-vulkan") {
+            if (!load_llama_lib()) throw std::runtime_error("failed to load libomnivoice_llama_backend.so");
+            llama_be = llama_backend_load_fn(model_path.c_str(), options.threads);
+            if (!llama_be) throw std::runtime_error("failed to init llama backend");
+        }
+#endif
+    }
+    ~Impl() {
+#ifdef OMNIVOICE_LLAMA
+        if (llama_be) llama_backend_free_fn(llama_be);
+#endif
+    }
 };
 
 OmniVoiceRuntime::OmniVoiceRuntime(const std::string & model_path, const RuntimeOptions & options)
@@ -1471,7 +1729,13 @@ Audio OmniVoiceRuntime::generate(const SynthesisParams & params) {
             ScopedStage stage(model, "prepare", "prepare_inputs", int(i + 1), int(chunk_texts.size()));
             in = prepare_inputs(model, chunk_texts[i], chunk_targets[i], lang, instruct, prompt_ptr, config.denoise);
         }
-        Tensor2i codes = generate_codes(model, in, config, int(i + 1), int(chunk_texts.size()));
+        Tensor2i codes =
+#ifdef OMNIVOICE_LLAMA
+            impl_->llama_be
+            ? generate_codes_llama(impl_->llama_be, model, in, config, int(i + 1), int(chunk_texts.size()))
+            :
+#endif
+            generate_codes(model, in, config, int(i + 1), int(chunk_texts.size()));
         if (!has_prompt && chunk_texts.size() > 1) {
             prompt.ref_audio_tokens = codes;
             prompt.ref_text = chunk_texts[i];
