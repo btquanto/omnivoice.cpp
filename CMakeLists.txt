@@ -104,6 +104,23 @@ if (GGML_VULKAN)
     target_compile_definitions(omnivoice_ggml_cpp PRIVATE GGML_USE_VULKAN)
 endif()
 
+# Copy ggml static libs to build root so Go linker can find them
+add_custom_command(TARGET omnivoice_bridge POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:ggml>" "$<TARGET_FILE:ggml-base>"
+        "$<TARGET_FILE:ggml-cpu>"
+        "$<TARGET_FILE_DIR:omnivoice_bridge>/"
+    COMMAND_EXPAND_LISTS
+)
+if(TARGET ggml-vulkan)
+    add_custom_command(TARGET omnivoice_bridge POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:ggml-vulkan>"
+            "$<TARGET_FILE_DIR:omnivoice_bridge>/"
+        COMMAND_EXPAND_LISTS
+    )
+endif()
+
 add_library(omnivoice_nlohmann_json INTERFACE)
 add_library(nlohmann_json::nlohmann_json ALIAS omnivoice_nlohmann_json)
 target_include_directories(omnivoice_nlohmann_json
