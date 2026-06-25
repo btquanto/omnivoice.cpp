@@ -32,11 +32,14 @@ static void * load_llama_lib() {
         if (llama_handle) break;
     }
     if (!llama_handle) return nullptr;
-    llama_backend_load_fn    = (void *(*)(const char *, int))dlsym(llama_handle, "llama_backend_load");
-    llama_backend_free_fn    = (void (*)(void *))dlsym(llama_handle, "llama_backend_free");
-    llama_backend_n_embd_fn  = (int (*)(void *))dlsym(llama_handle, "llama_backend_n_embd");
-    llama_backend_forward_fn = (int (*)(void *, const float *, int, float *))dlsym(llama_handle, "llama_backend_forward");
+    llama_backend_load_fn    = (void *(*)(const char *, int))dlsym(llama_handle, "omnivoice_llama_backend_load");
+    llama_backend_free_fn    = (void (*)(void *))dlsym(llama_handle, "omnivoice_llama_backend_free");
+    llama_backend_n_embd_fn  = (int (*)(void *))dlsym(llama_handle, "omnivoice_llama_backend_n_embd");
+    llama_backend_forward_fn = (int (*)(void *, const float *, int, float *))dlsym(llama_handle, "omnivoice_llama_backend_forward");
     if (!llama_backend_load_fn || !llama_backend_free_fn || !llama_backend_n_embd_fn || !llama_backend_forward_fn) {
+        fprintf(stderr, "llama_backend: dlsym failed: load=%p free=%p n_embd=%p forward=%p\n",
+            (void*)llama_backend_load_fn, (void*)llama_backend_free_fn,
+            (void*)llama_backend_n_embd_fn, (void*)llama_backend_forward_fn);
         dlclose(llama_handle);
         llama_handle = nullptr;
         return nullptr;
@@ -84,7 +87,7 @@ struct BackendHandle {
 #else
             throw std::runtime_error("CUDA backend is not available in this build");
 #endif
-        } else if (name == "vulkan") {
+        } else if (name == "vulkan" || name == "llama") {
 #if defined(GGML_USE_VULKAN)
             size_t dev = static_cast<size_t>(options.device);
             backend = ggml_backend_vk_init(dev);
@@ -1657,7 +1660,12 @@ struct OmniVoiceRuntime::Impl {
     explicit Impl(const std::string & model_path, const RuntimeOptions & options) : model(model_path, options) {
 #ifdef OMNIVOICE_LLAMA
         if (options.backend == "llama" || options.backend == "llama-vulkan") {
-            if (!load_llama_lib()) throw std::runtime_error("failed to load libomnivoice_llama_backend.so");
+            if (!load_llama_lib()) {
+                const char * err = dlerror();
+                std::string msg = "failed to load libomnivoice_llama_backend.so";
+                if (err) msg += std::string(": ") + err;
+                throw std::runtime_error(msg);
+            }
             llama_be = llama_backend_load_fn(model_path.c_str(), options.threads);
             if (!llama_be) throw std::runtime_error("failed to init llama backend");
         }

@@ -17,12 +17,13 @@ struct LlamaBackend {
 
 extern "C" {
 
-void * llama_backend_load(const char * model_path, int n_threads) {
+__attribute__((visibility("default"))) void * omnivoice_llama_backend_load(const char * model_path, int n_threads) {
     auto * be = new LlamaBackend();
     try {
-        llama_backend_init();
+        ::llama_backend_init();
 
         llama_model_params mparams = llama_model_default_params();
+        mparams.check_tensors = false;
         be->model = llama_model_load_from_file(model_path, mparams);
         if (!be->model) {
             delete be;
@@ -54,19 +55,19 @@ void * llama_backend_load(const char * model_path, int n_threads) {
     }
 }
 
-void llama_backend_free(void * handle) {
+__attribute__((visibility("default"))) void omnivoice_llama_backend_free(void * handle) {
     auto * be = static_cast<LlamaBackend *>(handle);
     if (be->ctx) llama_free(be->ctx);
     if (be->model) llama_model_free(be->model);
-    llama_backend_free();
+    ::llama_backend_free();
     delete be;
 }
 
-int llama_backend_n_embd(void * handle) {
+__attribute__((visibility("default"))) int omnivoice_llama_backend_n_embd(void * handle) {
     return static_cast<LlamaBackend *>(handle)->n_embd;
 }
 
-int llama_backend_forward(void * handle, const float * inputs, int n_tokens, float * outputs) {
+__attribute__((visibility("default"))) int omnivoice_llama_backend_forward(void * handle, const float * inputs, int n_tokens, float * outputs) {
     auto * be = static_cast<LlamaBackend *>(handle);
     if (!be->ctx) return -1;
 

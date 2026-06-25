@@ -27,9 +27,11 @@ if(OMNIVOICE_LLAMA)
     ExternalProject_Add(llama_external
         SOURCE_DIR "${OMNIVOICE_LLAMA_DIR}"
         BINARY_DIR "${LLAMA_BINARY_DIR}"
+        PATCH_COMMAND patch -p1 -d "${OMNIVOICE_LLAMA_DIR}" -i "${CMAKE_CURRENT_SOURCE_DIR}/patches/llama-partial-tensors.patch" -N --no-backup-if-mismatch || true
         CMAKE_ARGS
             -DCMAKE_BUILD_TYPE=Release
             -DCMAKE_INSTALL_PREFIX=${LLAMA_INSTALL_DIR}
+            -DCMAKE_INSTALL_RPATH='$ORIGIN'
             -DBUILD_SHARED_LIBS=ON
             -DLLAMA_BUILD_TESTS=OFF
             -DLLAMA_BUILD_EXAMPLES=OFF
@@ -45,6 +47,7 @@ if(OMNIVOICE_LLAMA)
         BUILD_BYPRODUCTS "${LLAMA_INSTALL_DIR}/lib/libllama.so"
     )
     add_library(omnivoice_llama_backend SHARED src/omnivoice_llama.cpp)
+    target_compile_definitions(omnivoice_llama_backend PRIVATE OMNIVOICE_LLAMA)
     target_include_directories(omnivoice_llama_backend
         PRIVATE
             "${OMNIVOICE_LLAMA_DIR}/include"

@@ -1,0 +1,11 @@
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1467,7 +1467,7 @@
+             }
+         }
+     }
+-    ml.done_getting_tensors();
++    ml.done_getting_tensors(true);
+ 
+     // Tied NVFP4 output is valid when no separate LM-head scale tensors are present.
+     // If sidecar scales exist, the output weight must be an actual output tensor.
