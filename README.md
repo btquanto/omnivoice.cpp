@@ -109,8 +109,8 @@ This is intended to make latency attribution visible during local inference.
 
 ### Bridge static library (Go CGo linking)
 
-The `cgo-bridge` branch adds an `omnivoice_bridge` static library target that
-wraps `OmniVoiceRuntime` in a C ABI (`extern "C"`) callable from Go via cgo:
+An `omnivoice_bridge` static library target wraps `OmniVoiceRuntime` in a C ABI
+(`extern "C"`) callable from Go via cgo:
 
 ```bash
 cmake -S . -B build \
