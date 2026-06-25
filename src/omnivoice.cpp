@@ -21,10 +21,16 @@ static int    (*llama_backend_forward_fn)(void *, const float *, int, float *) =
 
 static void * load_llama_lib() {
     if (llama_handle) return llama_handle;
+    const char * tmpdir = getenv("TMPDIR");
+    if (!tmpdir) tmpdir = getenv("TMP");
+    if (!tmpdir) tmpdir = "/tmp";
+    std::string tmp_lib = std::string(tmpdir) + "/omnivoice-synthesizer/libomnivoice_llama_backend.so";
+
     const char * lib_paths[] = {
         "libomnivoice_llama_backend.so",
         "./libomnivoice_llama_backend.so",
         "../build/libomnivoice_llama_backend.so",
+        tmp_lib.c_str(),
         nullptr,
     };
     for (const char ** p = lib_paths; *p; ++p) {
