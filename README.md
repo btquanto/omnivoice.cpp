@@ -37,6 +37,7 @@ include/omnivoice.h
 src/
 patches/
 vendor/ggml/
+vendor/llama.cpp/
 ```
 
 `vendor/ggml` is an upstream `ggml-org/ggml` submodule pinned to tag `v0.9.11`.
@@ -50,6 +51,7 @@ The submodule is kept clean. OmniVoice CUDA decode currently needs the patch in
 - Git submodule support
 - CUDA toolkit for `-DGGML_CUDA=ON`
 - Vulkan SDK for `-DGGML_VULKAN=ON` (optional)
+- Git submodule support (for `vendor/llama.cpp` when `-DOMNIVOICE_LLAMA=ON`)
 - An OmniVoice-compatible GGUF model file supplied by the user
 
 The repository does not include model weights.
@@ -106,6 +108,54 @@ The CLI binary is:
 
 The CLI prints stage timing, LLM step progress, and RTF summaries to stderr.
 This is intended to make latency attribution visible during local inference.
+
+### Llama.cpp backend (optional, faster Qwen3 inference)
+
+The `llama-backend` branch adds an optional llama.cpp-based backend that replaces
+the raw GGML Qwen3 forward pass with llama.cpp's optimized Qwen3 kernels.
+On CPU this is ~1.17× faster than raw GGML Q8_0; with Vulkan the improvement
+compounds.
+
+Enable with `-DOMNIVOICE_LLAMA=ON` at cmake configure time. This builds llama.cpp
+as a separate shared library (to avoid ggml version conflicts) and creates
+`libomnivoice_llama_backend.so` which is loaded at runtime via `dlopen`.
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DGGML_CUDA=OFF \
+  [-DGGML_VULKAN=ON] \
+  -DOMNIVOICE_LLAMA=ON \
+  -DGGML_NATIVE=ON \
+  -DGGML_AVX2=ON \
+  -DGGML_AVX512=ON \
+  -DGGML_FMA=ON \
+  -DCMAKE_CXX_FLAGS="-march=native -mtune=native" \
+  -DCMAKE_C_FLAGS="-march=native -mtune=native"
+
+cmake --build build -j$(nproc) --target omnivoice-cli
+```
+
+Use the `--backend llama` flag at runtime:
+
+```bash
+./build/omnivoice-cli --model model.gguf --backend llama --text "Hello" --output /tmp/out.wav
+# or with Vulkan + llama:
+./build/omnivoice-cli --model model.gguf --backend llama --device vulkan:0 --text "Hello" --output /tmp/out.wav
+```
+
+**How it works:** The monolithic OmniVoice GGUF contains Qwen3 LLM weights plus
+audio heads and Higgs decoder. When `--backend llama` is selected, the Qwen3
+forward pass (28 blocks of RMSNorm + Q/K/V attention + SwiGLU MLP) is served by
+llama.cpp's embedding mode with `causal_attn=false` and partial tensor loading
+(the extra Higgs/audio tensors are ignored). The audio heads projection
+(`a.output`), CFG guidance, argmax sampling, and Higgs decoder remain in the
+existing GGML graph. See [PERFORMANCE.md](https://github.com/scottyeager/OmniVoice/blob/bff0521664351babf1d2743fa54b4128ed06de18/PERFORMANCE.md) for the benchmark evidence.
+
+**Note:** The llama backend is loaded at runtime via `dlopen`. Both
+`libomnivoice_llama_backend.so` and `libllama.so` are copied next to the CLI
+and server binaries during build.
 
 ### Bridge static library (Go CGo linking)
 
@@ -209,8 +259,8 @@ is required.
 --duration              fixed output duration in seconds
 --position-temperature  position sampling temperature, default 5.0
 --class-temperature     class sampling temperature, default 0.0
---device                cpu or cuda[:N]
---backend               cpu or cuda
+--device                cpu, cuda[:N], or vulkan[:N]
+--backend               cpu, cuda, vulkan, or llama
 --seed                  random seed
 --threads               CPU thread count
 ```

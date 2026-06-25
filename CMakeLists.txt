@@ -9,12 +9,58 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(OMNIVOICE_GGML_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml" CACHE PATH "Path to vendored ggml")
+set(OMNIVOICE_LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp" CACHE PATH "Path to vendored llama.cpp")
 
 if(NOT EXISTS "${OMNIVOICE_GGML_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "vendor/ggml is missing; run git submodule update --init --recursive from ${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
 add_subdirectory("${OMNIVOICE_GGML_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/ggml")
+
+# ── llama.cpp backend (optional, external project to avoid ggml symbol conflicts) ──
+option(OMNIVOICE_LLAMA "Build with llama.cpp Qwen3 backend" OFF)
+if(OMNIVOICE_LLAMA)
+    include(ExternalProject)
+    include(GNUInstallDirs)
+    set(LLAMA_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/llama-external")
+    set(LLAMA_INSTALL_DIR "${CMAKE_CURRENT_BINARY_DIR}/llama-install")
+    ExternalProject_Add(llama_external
+        SOURCE_DIR "${OMNIVOICE_LLAMA_DIR}"
+        BINARY_DIR "${LLAMA_BINARY_DIR}"
+        PATCH_COMMAND patch -p1 -d "${OMNIVOICE_LLAMA_DIR}" -i "${CMAKE_CURRENT_SOURCE_DIR}/patches/llama-partial-tensors.patch" -N --no-backup-if-mismatch || true
+        CMAKE_ARGS
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_INSTALL_PREFIX=${LLAMA_INSTALL_DIR}
+            -DCMAKE_INSTALL_RPATH='$ORIGIN'
+            -DBUILD_SHARED_LIBS=ON
+            -DLLAMA_BUILD_TESTS=OFF
+            -DLLAMA_BUILD_EXAMPLES=OFF
+            -DLLAMA_BUILD_SERVER=OFF
+            -DLLAMA_BUILD_TOOLS=OFF
+            -DLLAMA_BUILD_APP=OFF
+            -DLLAMA_BUILD_COMMON=OFF
+            -DGGML_CUDA=OFF
+            -DGGML_VULKAN=OFF
+            -DGGML_NATIVE=ON
+            -DGGML_AVX2=ON
+            -DGGML_AVX512=ON
+        BUILD_BYPRODUCTS "${LLAMA_INSTALL_DIR}/lib/libllama.so"
+    )
+    add_library(omnivoice_llama_backend SHARED src/omnivoice_llama.cpp)
+    target_compile_definitions(omnivoice_llama_backend PRIVATE OMNIVOICE_LLAMA)
+    target_include_directories(omnivoice_llama_backend
+        PRIVATE
+            "${OMNIVOICE_LLAMA_DIR}/include"
+            "${OMNIVOICE_GGML_DIR}/include"
+    )
+    add_library(llama_client SHARED IMPORTED GLOBAL)
+    set_target_properties(llama_client PROPERTIES
+        IMPORTED_LOCATION "${LLAMA_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/libllama.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${OMNIVOICE_LLAMA_DIR}/include")
+    target_link_libraries(omnivoice_llama_backend PRIVATE llama_client)
+    target_link_options(omnivoice_llama_backend PRIVATE "LINKER:-rpath,\$ORIGIN")
+    add_dependencies(omnivoice_llama_backend llama_external)
+endif()
 
 add_library(omnivoice_miniaudio STATIC
     vendor/miniaudio/miniaudio.c
@@ -104,6 +150,10 @@ if (GGML_VULKAN)
     target_compile_definitions(omnivoice_ggml_cpp PRIVATE GGML_USE_VULKAN)
 endif()
 
+if(OMNIVOICE_LLAMA)
+    target_compile_definitions(omnivoice_ggml_cpp PRIVATE OMNIVOICE_LLAMA)
+endif()
+
 # Copy ggml static libs to build root so Go linker can find them
 add_custom_command(TARGET omnivoice_bridge POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -136,6 +186,21 @@ target_include_directories(omnivoice-server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(omnivoice-server PRIVATE omnivoice_ggml_cpp nlohmann_json::nlohmann_json)
 find_package(Threads REQUIRED)
 target_link_libraries(omnivoice-server PRIVATE Threads::Threads)
+
+if(OMNIVOICE_LLAMA)
+    macro(copy_llama_libs target)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${LLAMA_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/libllama.so"
+                "$<TARGET_FILE_DIR:${target}>/libllama.so"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:omnivoice_llama_backend>"
+                "$<TARGET_FILE_DIR:${target}>/libomnivoice_llama_backend.so"
+        )
+    endmacro()
+    copy_llama_libs(omnivoice-cli)
+    copy_llama_libs(omnivoice-server)
+endif()
 
 install(TARGETS omnivoice_ggml_cpp omnivoice-cli omnivoice-server
     RUNTIME DESTINATION bin
