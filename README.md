@@ -32,6 +32,7 @@ Not yet claimed:
 
 ```text
 CMakeLists.txt
+bridge/
 include/omnivoice.h
 src/
 patches/
@@ -48,6 +49,7 @@ The submodule is kept clean. OmniVoice CUDA decode currently needs the patch in
 - C++17 compiler
 - Git submodule support
 - CUDA toolkit for `-DGGML_CUDA=ON`
+- Vulkan SDK for `-DGGML_VULKAN=ON` (optional)
 - An OmniVoice-compatible GGUF model file supplied by the user
 
 The repository does not include model weights.
@@ -73,6 +75,8 @@ ggml `v0.9.11`.
 
 ## Build
 
+### CLI / Server (native C++)
+
 CUDA build:
 
 ```bash
@@ -87,6 +91,13 @@ cmake -S . -B build-cpu -DGGML_CUDA=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build-cpu -j8
 ```
 
+Vulkan build:
+
+```bash
+cmake -S . -B build -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j8
+```
+
 The CLI binary is:
 
 ```bash
@@ -95,6 +106,44 @@ The CLI binary is:
 
 The CLI prints stage timing, LLM step progress, and RTF summaries to stderr.
 This is intended to make latency attribution visible during local inference.
+
+### Bridge static library (Go CGo linking)
+
+An `omnivoice_bridge` static library target wraps `OmniVoiceRuntime` in a C ABI
+(`extern "C"`) callable from Go via cgo:
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DGGML_CUDA=OFF \
+  [-DGGML_VULKAN=ON] \
+  -DGGML_NATIVE=ON \
+  -DGGML_AVX2=ON \
+  -DGGML_AVX512=ON \
+  -DGGML_FMA=ON \
+  -DCMAKE_CXX_FLAGS="-march=native -mtune=native" \
+  -DCMAKE_C_FLAGS="-march=native -mtune=native"
+
+cmake --build build -j$(nproc) --target omnivoice_bridge
+```
+
+After building, all static libraries (including ggml variants) are copied to
+`build/` automatically by a post-build step, so the Go linker finds them at:
+
+```
+-L<repo>/build -lomnivoice_bridge -lomnivoice_ggml_cpp -lggml -lggml-base -lggml-cpu -lggml-vulkan ...
+```
+
+Output libraries in `build/`:
+
+| Library | Source |
+|---|---|
+| `libomnivoice_bridge.a` | bridge/ |
+| `libomnivoice_ggml_cpp.a` | src/ |
+| `libggml.a`, `libggml-base.a`, `libggml-cpu.a` | ggml/ |
+| `libggml-vulkan.a` | ggml/ (only with `-DGGML_VULKAN=ON`) |
+| `libomnivoice_miniaudio.a`, `libomnivoice_shine.a` | vendor/ |
 
 ## Text-To-Speech
 

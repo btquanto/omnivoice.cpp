@@ -79,6 +79,48 @@ target_include_directories(omnivoice_ggml_cpp
 
 target_link_libraries(omnivoice_ggml_cpp PUBLIC ggml PRIVATE omnivoice_miniaudio omnivoice_shine)
 
+# ── Bridge static library for Go CGo linking ──
+add_library(omnivoice_bridge STATIC
+    bridge/bridge.cpp
+)
+
+target_include_directories(omnivoice_bridge
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/bridge"
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
+target_link_libraries(omnivoice_bridge PUBLIC omnivoice_ggml_cpp)
+
+set_property(TARGET omnivoice_bridge PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET omnivoice_ggml_cpp PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET omnivoice_miniaudio PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET omnivoice_shine PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+target_compile_options(ggml PRIVATE -march=native -mtune=native)
+target_compile_options(omnivoice_ggml_cpp PRIVATE -march=native -mtune=native)
+target_compile_options(omnivoice_bridge PRIVATE -march=native -mtune=native)
+
+if (GGML_VULKAN)
+    target_compile_definitions(omnivoice_ggml_cpp PRIVATE GGML_USE_VULKAN)
+endif()
+
+# Copy ggml static libs to build root so Go linker can find them
+add_custom_command(TARGET omnivoice_bridge POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:ggml>" "$<TARGET_FILE:ggml-base>"
+        "$<TARGET_FILE:ggml-cpu>"
+        "$<TARGET_FILE_DIR:omnivoice_bridge>/"
+    COMMAND_EXPAND_LISTS
+)
+if(TARGET ggml-vulkan)
+    add_custom_command(TARGET omnivoice_bridge POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:ggml-vulkan>"
+            "$<TARGET_FILE_DIR:omnivoice_bridge>/"
+        COMMAND_EXPAND_LISTS
+    )
+endif()
+
 add_library(omnivoice_nlohmann_json INTERFACE)
 add_library(nlohmann_json::nlohmann_json ALIAS omnivoice_nlohmann_json)
 target_include_directories(omnivoice_nlohmann_json

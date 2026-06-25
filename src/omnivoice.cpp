@@ -5,6 +5,9 @@
 #if defined(GGML_USE_CUDA) || defined(GGML_CUDA)
 #include "ggml-cuda.h"
 #endif
+#if defined(GGML_USE_VULKAN)
+#include "ggml-vulkan.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -44,6 +47,14 @@ struct BackendHandle {
             buft = ggml_backend_cuda_buffer_type(options.device);
 #else
             throw std::runtime_error("CUDA backend is not available in this build");
+#endif
+        } else if (name == "vulkan") {
+#if defined(GGML_USE_VULKAN)
+            size_t dev = static_cast<size_t>(options.device);
+            backend = ggml_backend_vk_init(dev);
+            buft = ggml_backend_vk_buffer_type(dev);
+#else
+            throw std::runtime_error("Vulkan backend is not available in this build");
 #endif
         } else if (name == "cpu") {
             backend = ggml_backend_cpu_init();
