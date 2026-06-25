@@ -55,6 +55,7 @@ if(OMNIVOICE_LLAMA)
         IMPORTED_LOCATION "${LLAMA_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/libllama.so"
         INTERFACE_INCLUDE_DIRECTORIES "${OMNIVOICE_LLAMA_DIR}/include")
     target_link_libraries(omnivoice_llama_backend PRIVATE llama_client)
+    target_link_options(omnivoice_llama_backend PRIVATE "LINKER:-rpath,\$ORIGIN")
     add_dependencies(omnivoice_llama_backend llama_external)
 endif()
 
